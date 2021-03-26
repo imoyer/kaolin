@@ -1,0 +1,22 @@
+# kaolin: blazing a trail into the clay world
+# .gitignore file
+# created 3/26/2021
+# Ilan E. Moyer
+
+
+# annoying mac hidden files
+.DS_Store
+
+# eclipse project files
+.project
+.pydevproject
+
+# compiled python files
+*.pyc
+
+# C compiler object files
+*.o
+*.ko
+*.obj
+*.elf
+*.vmp
