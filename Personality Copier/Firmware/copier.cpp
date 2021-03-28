@@ -143,11 +143,11 @@ volatile uint8_t sckPinMask; //Note that the pin on the port is dynamic, dependi
 volatile uint8_t misoPinMask;
 
 #define mosiPORT 	PORTA
-#define mosiDDR 	PORTA
+#define mosiDDR 	DDRA
 volatile uint8_t mosiPinMask;
 
 #define resetPORT	PORTA
-#define resetDDR 	PORTA
+#define resetDDR 	DDRA
 volatile uint8_t resetPinMask;
 
 
@@ -162,22 +162,29 @@ void setup(){
   triggerDDR &= ~(1<<triggerPin);
 
   // Assign pins to socket and bus interfaces
-  socketChip.interface = {PA0, PA1, PA2, PA3};
-  busChip.interface = {PA4, PA5, PA6, PA7};
+  socketChip.interface.resetPin = PA0;
+  socketChip.interface.mosiPin = PA1;
+  socketChip.interface.misoPin = PA2;
+  socketChip.interface.sckPin = PA3;
+  busChip.interface.resetPin = PA4;
+  busChip.interface.mosiPin = PA5;
+  busChip.interface.misoPin = PA6;
+  busChip.interface.sckPin = PA7;
 
   resetState(); //resets the system state
 
+  sei(); //enable global interrupts
 };
 
 
 //---- LOOP ----
 void loop(){
-
   switch(state){
 
   	case 0: //searching for chip in socket
   	  if(detectChip(&socketChip)){ //chip has been detected in socket
   		state = 1;
+    	enableTimer(delay_checkSocketChip); //check again (i.e. reset state to 0) in ~1 sec.
   	  }else{ //No chip in socket
   	  	greenLEDOff();
   	  }
@@ -185,10 +192,10 @@ void loop(){
 
   	case 1: //socket chip is detected
   	  greenLEDOn(); //turn on the green LED
-  	  enableTimer(delay_checkSocketChip); //check again (i.e. reset state to 0) in ~1 sec.
   	  if(checkTrigger()){ //the trigger bus line has been brought LOW
   		  state = 2; //begin programming
   	  }
+  	  break;
 
   	case 2: //beginning the programming task.
   	  latchTrigger(); //latches the trigger line
@@ -238,20 +245,20 @@ void loop(){
   		  break;
   	  }
 
+
   	  // Copy EEPROM
   	  if(!copyEEPROM()){
   		  state = 3; //error state, blink red for a while.
   		  break;
   	  }
 
-  	  state = 0; //Done! Return to searching for chip in socket
-      redLEDOff(); //Turn off red LED if coming out of error state
+  	  resetState(); //Done! Return to searching for chip in socket
+
   	  break;
 
   	case 3: //error state
   	  _delay_ms(5000); //blink red LED for 5 sec
-  	  state = 0; //Return to searching for chip in socket.
-      redLEDOff(); //Turn off red LED
+  	  resetState();
   	  break;
   };
 
@@ -660,7 +667,6 @@ void switchFocus(chip *activeChip){
 uint8_t detectChip(chip *activeChip){
 	// This function will write to activeChip with the relevant info on the installed chip.
 	// Returns 1 if the chip was identified, otherwise 0.
-
 	switchFocus(activeChip); //switches the programming interface focus to the active chip
 
 	uint32_t activeChipSignature = readSignature();
@@ -713,6 +719,9 @@ void releaseTrigger(){
 void resetState(){
 	//resets the state of the copier
 	state = 0; //searching for a chip in the socket
+	redLEDOff();
+	greenLEDOff();
+	releaseTrigger();
 }
 
 void greenLEDOn(){
@@ -749,7 +758,6 @@ void redLEDToggle(){
 //---- TIMER FUNCTIONS ----
 void enableTimer(uint16_t duration){
 	//enables the watchdog timer. If triggered, it will restore the node to the ready (0) state.
-
 	TCCR1A = 0;	//CTC on OCR1A
 	TCCR1B = (1<<WGM12)|(1<<CS12)|(1<<CS10); //CTC on OCR1A, CLK/1024
 	TCCR1C = 0;
