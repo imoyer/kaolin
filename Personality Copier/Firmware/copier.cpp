@@ -718,10 +718,10 @@ void releaseTrigger(){
 
 void resetState(){
 	//resets the state of the copier
+	releaseTrigger();
 	state = 0; //searching for a chip in the socket
 	redLEDOff();
 	greenLEDOff();
-	releaseTrigger();
 }
 
 void greenLEDOn(){
