@@ -25,15 +25,15 @@ for programmer in [programmer1]:
 	programmer.identifyChip()
 	 
 	if programmer.program(sys.argv[1]):
-		print "PROGRAMMED " + sys.argv[1] + " SUCCESSFULLY!"
+		print("PROGRAMMED " + sys.argv[1] + " SUCCESSFULLY!")
 	
 	try:
 		lfuse = int(sys.argv[2],0)
 		programmer.setFuses(lfuse = lfuse, hfuse = None, efuse = None)	#sets clk/1
-		print "LFUSE BURNED TO: " + hex(lfuse)
+		print("LFUSE BURNED TO: " + hex(lfuse))
 	except:
 		programmer.setFuses(lfuse = 0xE2, hfuse = None, efuse = None)	#sets clk/1
-		print "NO LFUSE PROVIDED. BURNED LFUSE TO DEFAULT: 0xE2"
+		print("NO LFUSE PROVIDED. BURNED LFUSE TO DEFAULT: 0xE2")
 		
 	programmer.runChipRequest()   #start chip application
 	time.sleep(1)
