@@ -44,7 +44,7 @@ def sim_isPassive(self):
 def sim_setPassive():
 	self.sim_passive = 1
 
-def setActive():
+def sim_setActive():
 	global self.sim_passive
 	self.sim_passive = 0
 
@@ -173,13 +173,13 @@ def traverseNodes(nodeList):
 				#Hit a junction for the second time
 				if junctionState == 2:
 					move(node)
-					setActive()
+					sim_setActive()
 					sim_skipTerminal()
 					continue
 				#Hit a junction for the third time, just pass thru it
 				elif junctionState == 3:
 					move(node)
-					setActive()
+					sim_setActive()
 					sim_goReverse()
 
 				elif junctionState == 0:

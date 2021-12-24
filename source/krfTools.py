@@ -168,8 +168,16 @@ class krf(object):
 		# Convert into a nodeList
 		byteList = krf.memoryListToByteList(memoryList)
 		extendedNodeList = krf.byteListToNodeList(byteList)
-		self.nodeList = extendedNodeList
+		self.nodeList = extendedNodeList[0:krf.findLastNodeIndex(extendedNodeList)]
 
+
+
+	@staticmethod
+	def findLastNodeIndex(extendedNodeList):
+		"""Returns the index of the last node in a list read from chip memory"""
+		for index, node in enumerate(extendedNodeList):
+			if node['routing'] == 'isolated' and node['connection'] == 'none' and node['orientation'] == 'none':
+				return index
 
 
 	@staticmethod
@@ -224,7 +232,7 @@ class krf(object):
 		startAddress -- the starting memory address of the file
 		"""
 
-		byteList = krf.nodeListToByteList(self.nodeList)
+		byteList = krf.nodeListToByteList(self.nodeList + self.generateTerminatingNode())
 
 		records = []
 
@@ -251,7 +259,17 @@ class krf(object):
 		file.write(":00000001FF")
 
 		file.close()
-		print("WROTE " + filename + ": " + str(int(len(byteList)/3)) + " NODES (" + str(len(byteList)) + " BYTES) @ 0x" + str(hex(startAddress)).upper()[2:] + "\n")
+		print("WROTE " + filename + ": " + str(int(len(byteList)/3 - 1)) + " NODES (" + str(len(byteList) - 3) + " BYTES) @ 0x" + str(hex(startAddress)).upper()[2:] + "\n")
+
+
+	def generateTerminatingNode(self):
+		"""Generates and returns a special node that indicates the end of the routing data.
+
+		Note that for now, a single isolated node with no connection and no orientation indicates the end of data.
+		Eventually, we will need to revisit to support things like board outlines.
+		"""
+		return [{'node':len(self.nodeList) + 1, 'routing':'isolated', 'connection': 'none', 'orientation':'none', 'xPosition': 0, 'yPosition': 0}]
+
 
 	@staticmethod
 	def nodeListToByteList(nodeList):
@@ -408,18 +426,172 @@ class krf(object):
 		"""Returns True if we are passively traversing the nodeList."""
 		return self.sim_passive
 
-	def sim_setPassive():
-		"""Places the simulation traverser into passive mode."""
+	def sim_setPassive(self):
+		"""Places the read head into passive mode."""
 		self.sim_passive = 1
 
-	
+	def sim_setActive(self):
+		"""Places the read head into active mode."""
+		self.sim_passive = 0
+
+	def sim_newJunction(self):
+		"""Adds a new junction to the junction record."""
+		self.sim_junctionRecord = (self.sim_junctionRecord << 2) + 1
+		self.sim_currentJunctionPosition = 0
+
+	def sim_visitJunction(self):
+		"""Returns the state of the visited junction.
+
+		0: Junction is passive
+		2: Second visit to junction
+		3: Third visit to junction
+		"""
+
+		#right shift and mask
+		junctionState = (self.sim_junctionRecord >> self.sim_currentJunctionPosition) & 0b11
+
+		#SECOND VISIT
+		if junctionState == 1:
+			#change junction state to 2
+			self.sim_junctionRecord += (1<<self.sim_currentJunctionPosition)
+			self.sim_currentJunctionPosition = self.sim_currentJunctionPosition + 2
+			return 2
+
+		#THIRD VISIT
+		elif junctionState == 2:
+			#This is our third visit. Change junction state to 0 to inactivate going forwards.
+			self.sim_junctionRecord &= ~(2<<self.sim_currentJunctionPosition)
+			self.sim_currentJunctionPosition = self.sim_currentJunctionPosition + 2
+			return 3
+
+		elif junctionState == 0:
+			#The junction is inactive
+			self.sim_currentJunctionPosition = self.sim_currentJunctionPosition + 2
+			return 0	
+
+
+	def traverseNodeList(self):
+		"""Traverses the nodeList and returns a travelList.
+
+		Returns travelList -- a list of paths that were traveled [[stop1, stop2, stop3, ...], [stop1, stop2, stop3]]
+		"""
+
+		travelList = []
+		pathList = []
+		self.sim_initializeParameters()
+
+
+		while True:
+
+			node = self.nodeList[self.sim_currentPosition]
+
+			# GOING FORWARDS
+			if self.sim_direction == 1:
+				pathList += [node] #add node to the pathList
+
+				#FIRST NODE IN PATH
+				if self.sim_isFirstNodeInPath():
+					self.sim_goForward()
+
+					#ISOLATED NODE
+					if node['routing'] == 'isolated':
+						travelList += [pathList]
+						pathList = []
+						self.sim_startPath()
+						continue
+					
+					#START OF A PATH
+					else:
+						continue
+
+				#IN PATH
+				else:
+					#ENDPOINT
+					if node['routing'] == 'endpoint':
+						self.sim_goReverse()
+
+					#MIDPOINT
+					elif node['routing'] == 'midpoint':
+						self.sim_goForward()
+
+					#TEE
+					elif node['routing'] == 'tee':
+						self.sim_newJunction()
+						self.sim_goForward()
+					continue
+
+
+			# GOING IN REVERSE
+			if self.sim_direction == 0:
+				#BACK AT THE START, DONE WORKING ON PATH
+				if self.sim_isFirstNodeInPath():
+					pathList += [node]
+					self.sim_skipTerminal()
+					if self.sim_currentPosition < len(self.nodeList):
+						travelList += [pathList]
+						pathList = []
+						self.sim_startPath()
+						continue
+					else:
+						travelList += [pathList]
+						return travelList
+
+				#ENDPOINT
+				if node['routing'] == 'endpoint':
+					self.sim_setPassive() #we aren't at the start, so we're going sim_passive.
+					# Hitting an non-path-start endpoint in reverse simply means we're reading
+					# a non-active path.
+					self.sim_goReverse()
+					continue
+
+				#MIDPOINT
+				elif node['routing'] == 'midpoint':
+					#PASSIVE
+					if self.sim_isPassive():
+						self.sim_goReverse()
+						continue
+					#ACTIVE
+					else:
+						pathList += [node]
+						self.sim_goReverse()
+						continue
+
+				#TEE
+				elif node['routing'] == 'tee':
+					junctionState = self.sim_visitJunction()
+					#Hit a junction for the second time
+					if junctionState == 2:
+						pathList += [node]
+						self.sim_setActive()
+						self.sim_skipTerminal()
+						continue
+					#Hit a junction for the third time, just pass thru it
+					elif junctionState == 3:
+						pathList += [node]
+						self.sim_setActive()
+						self.sim_goReverse()
+
+					elif junctionState == 0:
+						self.sim_goReverse()
+						self.sim_setPassive()
+						continue
+
+	def printItinerary(self, travelList):
+		for path in travelList:
+			print("-- START OF PATH (" + str(len(path)) + " STOPS) --")
+
+			for node in path:
+				print(str(node['node']) + " " + node['routing'].upper() + " (X"+str(node['xPosition']) + " Y"+str(node['yPosition']) + ")")
+
+			print("")
 
 ##### WHEN MODULE IS CALLED FROM TERMINAL #####
 
 if __name__ == "__main__":
 	myKRF = krf()
-	myKRF.loadFromFile('testPCB.krf')
-	myKRF.writeHexFile('testPCB.hex')
+	# myKRF.loadFromFile('testPCB.krf')
+	# myKRF.writeHexFile('testPCB.hex')
 	myKRF.loadFromChip()
 	print(myKRF)
+	myKRF.printItinerary(myKRF.traverseNodeList())
 	
