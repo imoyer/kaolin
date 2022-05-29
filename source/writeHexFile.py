@@ -137,6 +137,6 @@ nodeList = utilities.loadKRFFromFile(sys.argv[1])
 hexFilename = os.path.splitext(sys.argv[1])[0] +".hex"
 
 byteList = encodeNodeList(nodeList)
-hexFile(byteList, hexFilename, 0x1C00) #last 1k of attiny84 program memory
+hexFile(byteList, hexFilename, 0x1A00) #last 1k of attiny84 program memory
 
 

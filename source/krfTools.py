@@ -83,7 +83,11 @@ import os, sys
 from pygestalt import nodes
 from pygestalt import interfaces
 from doppel.UPP import UPPGestaltNode #For reading directly from a chip
-import time
+import time, math
+
+import urumbu_xyz_mill
+
+from PIL import Image, ImageDraw
 
 
 class krf(object):
@@ -135,7 +139,7 @@ class krf(object):
 
 	##### LOAD KRF FROM CHIP #####
 
-	def loadFromChip(self, address = 0x1C00):
+	def loadFromChip(self, address = 0x1A00):
 		"""Loads nodeList from the memory of a chip using the Universal Personality Programmer (UPP)
 
 		address -- the starting address of the nodelist in the target chip's program memory
@@ -152,8 +156,8 @@ class krf(object):
 		# Identify Chip
 		print("Identifying Chip...")
 		chipType = programmer.identifyChip()
-		if chipType != UPPGestaltNode.attiny84:
-			print("Kaolin only works with ATTiny84 chips... unable to read this " + str(chipType))
+		if chipType != UPPGestaltNode.attiny84 and chipType != UPPGestaltNode.attiny85:
+			print("Kaolin only works with ATTiny84 or ATTiny85 chips... unable to read this " + str(chipType))
 			return False
 
 		# Read Memory
@@ -225,7 +229,7 @@ class krf(object):
 
 	##### WRITE OUT HEX FILE #####
 
-	def writeHexFile(self, filename, startAddress = 0x1C00, maxByteCount = 16):
+	def writeHexFile(self, filename, startAddress = 0x1A00, maxByteCount = 16):
 		"""Writes out an intel hex file based on the provided byte list.
 
 		filename -- the filename to output
@@ -585,13 +589,428 @@ class krf(object):
 
 			print("")
 
+	
+	def tp_absAngle(self, startPoint, endPoint):
+		"""Returns the absolute angle of the line drawn from the start point to the end point, relative to the right-going horizontal.
+
+		startPoint, endPoint -- (x, y)
+
+		returns angle in degrees
+		"""
+		x_start, y_start = startPoint
+		x_end, y_end = endPoint
+
+		angle = math.atan2((y_end-y_start), (x_end-x_start))
+
+		angle = int(angle * 360 / (2*math.pi))
+
+		if angle >= 0: 
+			return angle
+		else:
+			return 360 + angle
+
+	def tp_getJunctionAngles(self, startPoint, midPoint, endPoint):
+		"""Returns the key angles for a given junction.
+
+		startPoint -- the point leading into the junction (x, y)
+		midPoint -- the point at the junction (x, y)
+		endPoint -- the next point after the junction (x, y)
+
+		returns jointAngle, junctionAngle
+
+			jointAngle -- 	the angle created between the entry and exit vectors, measured in degrees going CCW, 
+							while rotating the junction such that the entry vector to be horizontal
+
+			junctionAngle -- 	the angle of the entire junction, measured in degrees CCW of the entry vector
+								relative to the right-going horizontal.
+		"""
+
+		junctionAngle = self.tp_absAngle(startPoint, midPoint)
+		jointAngle = self.tp_absAngle(endPoint, midPoint) - junctionAngle
+
+		if jointAngle >= 0:
+			return jointAngle, junctionAngle
+		else:
+			return 360 + jointAngle, junctionAngle
+
+
+	def tp_connection_none(self, jointAngle, orientation, traceWidth, toolDia, firstNode = False, lastNode = False):
+		"""Generates a RELATIVE toolpath for entering a joint with connection type of 'none'.
+
+		jointAngle -- the CCW angle formed by the joint, measured from the right-going horizontal
+		orientation -- the orientation of the connection. No meaning for a connection type of 'none'
+
+		returns a list of points that traverse around the joint, RELATIVE TO THE CENTER POINT OF THE JOINT.
+		"""
+		offset = traceWidth / 2.0 + toolDia / 2.0
+		
+		if firstNode:
+			return [(-offset, 0), (-offset, -offset), (0, -offset)]
+
+		elif lastNode:
+			return [(0, -offset), (offset, -offset), (offset, 0)]
+
+		else: #not an end node
+			if jointAngle == 0:
+				# An odd one, for when joints double back on themselves
+				return [(offset, -offset), (offset, offset)]
+			elif jointAngle == 90:
+				return [(-offset, -offset)]
+
+			elif jointAngle == 180:
+				return [(0, -offset)]
+
+			elif jointAngle == 270:
+				return [(offset, -offset)]
+
+			else:
+				print("ERROR: JOINT ANGLE " + str(jointAngle) + " IS NOT SUPPORTED")
+				return None
+
+	def tp_connection_pad(self, jointAngle, orientation, traceWidth, toolDia, firstNode = False, lastNode = False):
+		"""Generates a RELATIVE toolpath for entering a joint with connection type of 'pad'.
+
+		jointAngle -- the CCW angle formed by the joint, measured from the right-going horizontal
+		orientation -- the orientation of the connection. No meaning for a connection type of 'none'
+
+		returns a list of points that traverse around the joint, RELATIVE TO THE CENTER POINT OF THE JOINT.
+		"""
+
+		# --- PAD DEFINITIONS ---
+
+		# These assume a horizontally oriented pad
+		pad_height = 0.1 * 25.4 #mm, this is the same as the width for a compressed pad
+
+
+		# Pre-calculated offsets
+		offset_trace = traceWidth / 2.0 + toolDia / 2.0
+		offset_C = pad_height/2.0 + toolDia / 2.0 #compressed pad
+
+		
+		if firstNode:
+			return [(-offset_C, 0), (-offset_C, -offset_C), (offset_C, -offset_C), (offset_C, -offset_trace)]
+
+		elif lastNode:
+			return [(-offset_C, -offset_trace), (-offset_C, -offset_C), (offset_C, -offset_C), (offset_C, 0)]
+
+		else: #not an end node
+			if jointAngle == 0:
+				# An odd one, for when joints double back on themselves
+				return [(-offset_C, -offset_trace), (-offset_C, -offset_C), (offset_C, -offset_C), (offset_C, offset_C), (-offset_C, offset_C), (-offset_C, offset_trace)]
+			
+			elif jointAngle == 90:
+				return [(-offset_C, -offset_trace), (-offset_C, -offset_C), (-offset_trace, -offset_C)]
+
+			elif jointAngle == 180:
+				return [(-offset_C, -offset_trace), (-offset_C, -offset_C), (offset_C, -offset_C), (offset_C, -offset_trace)]
+
+			elif jointAngle == 270:
+				return [(-offset_C, -offset_trace), (-offset_C, -offset_C), (offset_C, -offset_C), (offset_C, offset_C), (offset_trace, offset_C)]
+
+			else:
+				print("ERROR: JOINT ANGLE " + str(jointAngle) + " IS NOT SUPPORTED")
+				return None
+
+
+	def tp_positionAndRotate(self, inputPointList, junctionAngle, center):
+		"""Offsets and rotates a list of points about a centerpoint.
+
+		inputPointList -- the list of points to offset, in format [(x1, y1), (x2, y2), (x3, y3),...]
+		junctionAngle -- a CCW rotation angle, relative to the right-going horizontal, in degrees
+		center -- the center position of the node, as (x, y)
+		"""
+
+		outputPointList = []
+		x_c, y_c = center
+		for point in inputPointList:
+			x, y = point
+
+			# ROTATE
+			if junctionAngle == 0:
+				x_r = x
+				y_r = y
+			elif junctionAngle == 90:
+				x_r = -y
+				y_r = x
+
+			elif junctionAngle == 180:
+				x_r = -x
+				y_r = -y
+
+			elif junctionAngle == 270:
+				x_r = y
+				y_r = -x
+
+			else:
+				print("ERROR: JOINT ANGLE " + str(jointAngle) + " IS NOT SUPPORTED")
+
+			# TRANSLATE
+			outputPointList += [(x_r + x_c, y_r + y_c)]
+
+		return outputPointList
+
+
+
+	def urumbu(self, depth, feedrate, traverseHeight, traceWidth, toolDia, metric = False, simulate = True):
+		"""Routes a PCB using urumbu_xyz_mill.
+
+		depth -- the depth to which to cut, AS A POSITIVE NUMBER
+		traverseHeight -- the z position at which traversing motion should occur
+		metric -- if True, all input parameters are metric
+		simulate -- if True, this will use PIL to output a simulation of the route.
+
+		NOTE: Unlike the rest of this module, within this function, all units are mm.
+		"""
+
+		# convert inputs to metric if necessary
+		if not metric:
+			depth = depth * 25.4
+			feedrate = feedrate * 25.4
+			traverseHeight = traverseHeight * 25.4
+			toolDia = toolDia * 25.4
+			traceWidth = traceWidth * 25.4
+		
+		#get all closed paths
+		paths = self.traverseNodeList()
+
+		#generate toolpaths
+		toolpath = [(0.0, 0.0, traverseHeight)] #stored as a list of tuples (X, Y, Z)
+		drills = [] #a list of drill positions, stored as (X, Y)
+		priorPosition = (0.0, 0.0) #stored as (x pos, y pos, z pos)
+
+		connectionFunctions = {"none": self.tp_connection_none, "pad": self.tp_connection_pad, "smd": self.tp_connection_none, "hole": self.tp_connection_none}
+
+		for path in paths:
+			length = len(path)
+			for index, node in enumerate(path):
+
+				#pull properties
+				connection = node["connection"]
+				orientation = node["orientation"]
+				x = node["xPosition"] * 25.4 #positions are always stored internally as inch, so convert to metric
+				y = node["yPosition"] * 25.4
+
+				thisPosition = (x, y)
+
+				if length > 1: #multi-point path
+
+					# --- SETUP ---
+
+					#Is this the first node on the path?
+					if index == 0:
+						pathStart = True
+					else:
+						pathStart = False
+
+					#Is this the last node on the path?
+					if index == length -1:
+						pathEnd = True
+					else:
+						pathEnd = False
+
+					if not pathEnd:
+						x_next = path[index + 1]["xPosition"] * 25.4
+						y_next = path[index + 1]["yPosition"] * 25.4
+						nextPosition = (x_next, y_next)
+
+					connectionFunction = connectionFunctions[connection]
+
+
+					# --- TOOLPATH ALGORITHMS ---
+
+					if pathStart:
+						# Calculate points that traverse the joint
+						junctionAngle = self.tp_absAngle(thisPosition, nextPosition)
+						pointsAboutJoint = connectionFunction(jointAngle = 0, orientation = orientation, traceWidth = traceWidth, toolDia = toolDia, firstNode = True)
+						absolutePoints = self.tp_positionAndRotate(pointsAboutJoint, junctionAngle, thisPosition)
+
+						# Generate traverse to the first point
+						x_start, y_start = absolutePoints[0]
+						toolpath += [(x_start, y_start, traverseHeight)]
+
+						# Load up toolpath
+						for point in absolutePoints:
+							x_point, y_point = point
+							toolpath += [(x_point, y_point, -depth)]
+
+					elif pathEnd:
+						# Calculate points that traverse the joint						
+						junctionAngle = self.tp_absAngle(priorPosition, thisPosition)
+						pointsAboutJoint = connectionFunction(jointAngle = 0, orientation = orientation, traceWidth = traceWidth, toolDia = toolDia, lastNode = True)
+						absolutePoints = self.tp_positionAndRotate(pointsAboutJoint, junctionAngle, thisPosition)
+
+						# Load up toolpath
+						for point in absolutePoints:
+							x_point, y_point = point
+							toolpath += [(x_point, y_point, -depth)]
+
+						# Retract					
+						x_end, y_end = absolutePoints[-1]
+						toolpath += [(x_end, y_end, traverseHeight)]
+
+					else:
+						# Calculate points that traverse the joint
+						jointAngle, junctionAngle = self.tp_getJunctionAngles(priorPosition, thisPosition, nextPosition)
+						pointsAboutJoint = connectionFunction(jointAngle, orientation, traceWidth, toolDia)
+						absolutePoints = self.tp_positionAndRotate(pointsAboutJoint, junctionAngle, thisPosition)
+
+						#load up toolpath
+						for point in absolutePoints:
+							x_point, y_point = point
+							toolpath += [(x_point, y_point, -depth)]
+
+				if connection == "pad" or connection == "hole":
+					drills += [thisPosition]
+
+				priorPosition = thisPosition						
+
+		x_point, y_point = thisPosition
+		toolpath += [(x_point, y_point, traverseHeight)]
+		toolpath += [(0, 0, traverseHeight)]
+
+			# # --- TOOLPATHING ALGORITHM HERE ---
+
+			# 	if index == 0: #start of path
+			# 		position = (xPosition, yPosition, traverseHeight)
+			# 		toolpath += [position]
+			# 		position = (xPosition, yPosition, -depth)
+			# 		toolpath += [position]
+			# 	else:
+			# 		position = (xPosition, yPosition, -depth)
+			# 		toolpath += [position]
+
+
+			# toolpath += [(xPosition, yPosition, traverseHeight)]
+
+			# # --- END TOOLPATHING ALGORITHM ---
+
+
+
+
+		#simulate
+		if simulate:
+			resolution = 0.05 #mm/pixel
+			pixelPitch = 1.0/resolution #pixels/mm
+
+			canvasWidth = 125 #mm
+			canvasHeight = 125 #mm
+
+			canvas = Image.new('RGB', (int(canvasWidth*pixelPitch), int(canvasHeight*pixelPitch)), (255, 255, 255))
+
+			draw = ImageDraw.Draw(canvas)
+
+			print("RUNNING TOOLPATH IN SIMULATION")
+
+			lastPosition = (0,0,0)
+
+			for position in toolpath:
+				x_last, y_last, z_last = lastPosition
+				x_next, y_next, z_next = position 
+
+				if z_last > 0 and z_next > 0: #traverse
+					fill = (0, 255, 0) #Green
+
+				elif z_last < 0 and z_next < 0:
+					fill = (0, 0, 255) #Blue
+
+				else:
+					fill = (255, 0, 0) #Red
+
+				draw.line((int(x_last*pixelPitch), int(canvasHeight*pixelPitch - y_last*pixelPitch), int(x_next*pixelPitch), int(canvasHeight*pixelPitch - y_next*pixelPitch)), fill = fill, width=int(toolDia*pixelPitch))
+
+				lastPosition = position
+
+
+			x_last, y_last , z_last = lastPosition
+
+
+			for drillPosition in drills:
+				x_next, y_next = drillPosition
+				# draw.line((int(x_last*pixelPitch), int(canvasHeight*pixelPitch - y_last*pixelPitch), int(x_next*pixelPitch), int(canvasHeight*pixelPitch - y_next*pixelPitch)), fill = (0, 255, 0), width=int(toolDia*pixelPitch))
+
+				#Draw Drill Hole
+				renderRadius = toolDia
+
+				x1 = x_next - renderRadius
+				y1 = y_next + renderRadius
+				x2 = x_next + renderRadius
+				y2 = y_next - renderRadius
+
+				draw.ellipse((int(x1 * pixelPitch), int(canvasHeight*pixelPitch - y1*pixelPitch), int(x2 * pixelPitch), int(canvasHeight*pixelPitch - y2*pixelPitch)), fill=(255, 0, 255), outline=(0, 0, 0))
+
+				x_last, y_last = x_next, y_next
+
+			draw.line((int(x_next*pixelPitch), int(canvasHeight*pixelPitch - y_next*pixelPitch), 0, canvasHeight*pixelPitch), fill = (0,255,0), width= int(toolDia*pixelPitch))
+
+			canvas.save('simulate.png')			
+
+		#run urumbu
+		else:
+
+			print("RUNNING TOOLPATH ON URUMBU")
+
+			actionQueue = urumbu_xyz_mill.init_machine("/dev/tty.usbmodem11401", "/dev/tty.usbmodem11301", "/dev/tty.usbmodem11201", "/dev/tty.usbmodem111401")
+
+			#turn on spindle
+			# actionQueue.put(urumbu_xyz_mill.SpindleAction('spindle', True))
+			# actionQueue.put(urumbu_xyz_mill.WaitAction(1))
+
+		    #load in program
+			for position in toolpath:
+				x, y, z = position
+
+				print("   X: " + str(round(x, 2)) + "MM, Y: " + str(round(y,2)) + "MM, Z: " + str(round(z,2)) + "MM @ " + str(round(feedrate,0)) + "MM/SEC")
+				actionQueue.put(urumbu_xyz_mill.Line([x, y, z], feedrate))
+
+
+			#Drill all holes
+			for drillPosition in drills:
+				x, y = drillPosition
+				actionQueue.put(urumbu_xyz_mill.Line([x, y, traverseHeight], feedrate))
+				actionQueue.put(urumbu_xyz_mill.Line([x, y, -1.6], feedrate))
+				actionQueue.put(urumbu_xyz_mill.Line([x, y, traverseHeight], feedrate))
+
+			actionQueue.put(urumbu_xyz_mill.Line([0, 0, traverseHeight], feedrate))
+			actionQueue.put(urumbu_xyz_mill.Line([0, 0, 0], feedrate))
+
+		    #turn off spindle
+			# actionQueue.put(urumbu_xyz_mill.SpindleAction('spindle', False))
+
+		    #wait
+			time.sleep(10)
+
+
+
+
 ##### WHEN MODULE IS CALLED FROM TERMINAL #####
 
 if __name__ == "__main__":
 	myKRF = krf()
-	# myKRF.loadFromFile('testPCB.krf')
-	# myKRF.writeHexFile('testPCB.hex')
+	# myKRF.loadFromFile('555.krf')
 	myKRF.loadFromChip()
-	print(myKRF)
-	myKRF.printItinerary(myKRF.traverseNodeList())
+
+	myKRF.urumbu(depth = 0.008, feedrate = 0.2, traverseHeight = 0.1, traceWidth = 0.04, toolDia = 0.03, simulate = False)
+
+	# startPoint = (0, 0)
+	# midPoint = (0, -1)
+	# endPoint_90 = (-1, -1)
+	# endPoint_180 = (0, -2)
+	# endPoint_270 = (1, -1)
+	# endPoint_360 = (0, 0)
+
+	# print(myKRF.tp_getJunctionAngles(startPoint, midPoint, endPoint_90))
+	# print(myKRF.tp_getJunctionAngles(startPoint, midPoint, endPoint_180))
+	# print(myKRF.tp_getJunctionAngles(startPoint, midPoint, endPoint_270))
+	# print(myKRF.tp_getJunctionAngles(startPoint, midPoint, endPoint_360))
+
+	# print()
+
+	# startPoint = (0,0)
+	# endPoint = (0, -1)
+	# print(myKRF.tp_absAngle(startPoint, endPoint))
+	# print(myKRF.tp_absAngle(midPoint, endPoint_270))
+
+	# myKRF.writeHexFile('555_PCB.hex')
+	# print(myKRF)
+	# myKRF.printItinerary(myKRF.traverseNodeList())
 	

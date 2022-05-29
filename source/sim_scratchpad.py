@@ -49,7 +49,7 @@ def sim_setActive():
 	self.sim_passive = 0
 
 # JUNCTION TRACKER FUNCTIONS
-def newJunction():
+def sim_newJunction():
 	global self.sim_junctionRecord
 	global currentJunctionMask
 	global self.sim_currentJunctionPosition
@@ -64,9 +64,7 @@ def sim_visitJunction():
 	2: Second visit to junction
 	3: Third visit to junction
 	"""
-	global self.sim_junctionRecord
-	global self.sim_currentJunctionPosition
-
+	
 	#right shift and mask
 	junctionState = (self.sim_junctionRecord >> self.sim_currentJunctionPosition) & 0b11
 
@@ -129,7 +127,7 @@ def traverseNodes(nodeList):
 
 				#TEE
 				elif node['routing'] == 'tee':
-					newJunction()
+					sim_newJunction()
 					sim_goForward()
 				continue
 
